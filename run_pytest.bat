@@ -1,0 +1,1 @@
+pytest test/test_photo_selector.py -v
