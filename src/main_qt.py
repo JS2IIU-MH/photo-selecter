@@ -151,10 +151,24 @@ class PhotoSelectorApp(QMainWindow):
 
     def overlay_blur_label(self, img):
         from PIL import ImageDraw, ImageFont
+        import platform
         img = img.copy()
         draw = ImageDraw.Draw(img)
+        font_path = None
+        if platform.system() == "Darwin":
+            # macOSの一般的な日本語フォント（ヒラギノ角ゴ）
+            font_path = "/System/Library/Fonts/ヒラギノ角ゴシック W5.ttc"
+            if not os.path.exists(font_path):
+                font_path = "/Library/Fonts/Arial.ttf"  # Arialがあれば
+        elif platform.system() == "Windows":
+            font_path = "arial.ttf"
+        else:
+            font_path = None
         try:
-            font = ImageFont.truetype("arial.ttf", 32)
+            if font_path and os.path.exists(font_path):
+                font = ImageFont.truetype(font_path, 32)
+            else:
+                font = ImageFont.truetype("arial.ttf", 32)
         except:
             font = ImageFont.load_default()
         draw.rectangle([0,0,100,40], fill=(255,255,255,128))
