@@ -13,7 +13,12 @@
 - 操作キーや拡大範囲・倍率・ぼやけ閾値・ウィンドウサイズなどを`setting.ini`でカスタマイズ可能
 - 削除リストはjson形式で一時保存、終了時にまとめて削除可能
 - フォルダ選択ダイアログは直近の履歴を記憶
-- 画像のプリフェッチによる高速表示
+- **高速画像読み込み**
+  - 複数画像の先読み（次3枚+前1枚）
+  - 画像・ぼやけ判定結果のキャッシング
+  - JPEGドラフトモードによる高速デコード
+  - 最適化されたリサイズアルゴリズム
+  - 詳細は[PERFORMANCE_IMPROVEMENTS.md](PERFORMANCE_IMPROVEMENTS.md)を参照
 - Windows専用（tkinterバージョン：[`src/main.py`](src/main.py)）
 - Mac専用（Qt5バージョン：[`src/main_qt.py`](src/main_qt.py)）
 
