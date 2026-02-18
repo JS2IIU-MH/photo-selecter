@@ -293,12 +293,17 @@ class PhotoSelectorApp(QMainWindow):
             if ext == '.heic':
                 import pillow_heif
                 pillow_heif.register_heif_opener()
+            
             from PIL import Image
-            img = Image.open(path)
-            # Use draft mode for faster loading of JPEG images
+            # For JPEG images, use draft mode for faster loading
             if ext in ('.jpg', '.jpeg'):
-                # Request approximate size for faster decoding
+                img = Image.open(path)
+                # draft() must be called immediately after open, before any other operations
+                # This tells PIL to decode at a reduced resolution for faster loading
                 img.draft('RGB', (self.config.width * 2, self.config.height * 2))
+            else:
+                img = Image.open(path)
+            
             return img.convert('RGB')
         except Exception as e:
             print(f'画像読み込み失敗: {e}')
