@@ -43,6 +43,7 @@ class PhotoSelectorApp(QMainWindow):
         self.image_list = []
         self.current_index = 0
         self.prefetch_cache = {}
+        self.blur_cache = {}  # Cache blur detection results
         self.delete_list = []
         self.json_delete_path = ''
         self.init_ui()
@@ -109,6 +110,8 @@ class PhotoSelectorApp(QMainWindow):
         self.image_list = [f for f in os.listdir(self.open_dir) if f.lower().endswith(exts)]
         self.image_list.sort()
         self.current_index = 0
+        self.prefetch_cache = {}
+        self.blur_cache = {}  # Clear blur cache when loading new images
 
     def show_image(self):
         from PyQt5.QtGui import QPixmap
@@ -118,7 +121,13 @@ class PhotoSelectorApp(QMainWindow):
             return
         fname = self.image_list[self.current_index]
         path = os.path.join(self.open_dir, fname)
-        img = self.load_image(path)
+        
+        # Use prefetch cache if available
+        if fname in self.prefetch_cache:
+            img = self.prefetch_cache[fname]
+        else:
+            img = self.load_image(path)
+        
         if img is None:
             self.image_label.setText('画像を開けません')
             self.image_label.setPixmap(QPixmap())
@@ -126,7 +135,14 @@ class PhotoSelectorApp(QMainWindow):
             QMessageBox.critical(self, 'エラー', f'画像を開けません: {fname}')
             return
         img_disp = self.resize_image(img)
-        blur = self.is_blur(img)
+        
+        # Use blur cache if available
+        if fname in self.blur_cache:
+            blur = self.blur_cache[fname]
+        else:
+            blur = self.is_blur(img)
+            self.blur_cache[fname] = blur
+        
         img_disp = self.overlay_zoom(img_disp, img)
         if blur:
             img_disp = self.overlay_blur_label(img_disp)
@@ -176,13 +192,40 @@ class PhotoSelectorApp(QMainWindow):
         return img
 
     def prefetch_next(self):
-        idx = self.current_index + 1
-        if idx < len(self.image_list):
+        # Load next 3 images for faster navigation
+        for offset in range(1, 4):
+            idx = self.current_index + offset
+            if idx < len(self.image_list):
+                fname = self.image_list[idx]
+                if fname not in self.prefetch_cache:
+                    path = os.path.join(self.open_dir, fname)
+                    img = self.load_image(path)
+                    if img is not None:
+                        self.prefetch_cache[fname] = img
+        
+        # Also load previous image for backward navigation
+        idx = self.current_index - 1
+        if idx >= 0:
             fname = self.image_list[idx]
-            path = os.path.join(self.open_dir, fname)
             if fname not in self.prefetch_cache:
+                path = os.path.join(self.open_dir, fname)
                 img = self.load_image(path)
-                self.prefetch_cache[fname] = img
+                if img is not None:
+                    self.prefetch_cache[fname] = img
+        
+        # Clean up old cache entries to prevent memory issues
+        # Keep only nearby images in cache (5 before, 5 after)
+        cache_range = 5
+        keep_indices = set(range(
+            max(0, self.current_index - cache_range),
+            min(len(self.image_list), self.current_index + cache_range + 1)
+        ))
+        keep_fnames = {self.image_list[i] for i in keep_indices}
+        
+        # Remove images that are too far from current position
+        fnames_to_remove = [fname for fname in self.prefetch_cache.keys() if fname not in keep_fnames]
+        for fname in fnames_to_remove:
+            del self.prefetch_cache[fname]
 
     def next_image(self):
         if self.current_index < len(self.image_list) - 1:
@@ -252,6 +295,10 @@ class PhotoSelectorApp(QMainWindow):
                 pillow_heif.register_heif_opener()
             from PIL import Image
             img = Image.open(path)
+            # Use draft mode for faster loading of JPEG images
+            if ext in ('.jpg', '.jpeg'):
+                # Request approximate size for faster decoding
+                img.draft('RGB', (self.config.width * 2, self.config.height * 2))
             return img.convert('RGB')
         except Exception as e:
             print(f'画像読み込み失敗: {e}')
@@ -264,7 +311,8 @@ class PhotoSelectorApp(QMainWindow):
         img_w, img_h = img.size
         ratio = min(w / img_w, h / img_h)
         new_size = (int(img_w * ratio), int(img_h * ratio))
-        return img.resize(new_size, Image.LANCZOS)
+        # Use faster resizing for better performance
+        return img.resize(new_size, Image.BILINEAR)
 
     def overlay_zoom(self, base_img, orig_img):
         from PIL import ImageDraw
@@ -281,8 +329,8 @@ class PhotoSelectorApp(QMainWindow):
         scale_y = disp_h / orig_img.height
         rect = [left*scale_x, upper*scale_y, right*scale_x, lower*scale_y]
         draw.rectangle(rect, outline='red', width=3)
-        # 拡大部分の作成
-        crop = orig_img.crop((left, upper, right, lower)).resize((r*2*5, r*2*5), Image.LANCZOS)
+        # 拡大部分の作成 - use BILINEAR for faster performance
+        crop = orig_img.crop((left, upper, right, lower)).resize((r*2*5, r*2*5), Image.BILINEAR)
         crop_draw = ImageDraw.Draw(crop)
         crop_draw.rectangle([0, 0, crop.width-1, crop.height-1], outline='red', width=3)
         margin = 60
