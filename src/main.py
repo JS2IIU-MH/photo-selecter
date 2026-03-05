@@ -263,7 +263,79 @@ class PhotoSelectorApp(tk.Tk):
     def on_exit(self):
         self.exit_without_delete()
 
+def _run_cli(input_dir: str, blur_method: str) -> None:
+    """Batch-process images in *input_dir* and print blur scores to stdout.
+
+    For each image the following tab-separated fields are printed::
+
+        <filename>  raw=<raw_score>  norm=<normalised_0-100>  label=<label>
+
+    Args:
+        input_dir:   Directory containing image files.
+        blur_method: One of ``"laplacian"`` or ``"fft"``.
+    """
+    import glob as _glob
+
+    exts = ('*.jpg', '*.jpeg', '*.png', '*.heic',
+            '*.JPG', '*.JPEG', '*.PNG', '*.HEIC')
+    image_paths = []
+    for pattern in exts:
+        image_paths.extend(_glob.glob(os.path.join(input_dir, pattern)))
+    image_paths.sort()
+
+    if not image_paths:
+        print(f'No images found in: {input_dir}')
+        return
+
+    for path in image_paths:
+        fname = os.path.basename(path)
+        try:
+            img_pil = Image.open(path).convert('RGB')
+            arr_gray = np.array(img_pil.convert('L'))
+
+            if blur_method == 'fft':
+                from blur_fft import (compute_blur_score_fft,
+                                      normalize_score,
+                                      blur_label_and_color)
+                arr_bgr = np.array(img_pil)[:, :, ::-1]  # RGB → BGR
+                raw = compute_blur_score_fft(arr_bgr)
+                norm = normalize_score(raw)
+                label, _ = blur_label_and_color(norm)
+            else:  # laplacian (default)
+                lap = cv2.Laplacian(arr_gray, cv2.CV_64F)
+                raw = float(lap.var())
+                norm = min(raw / 500.0, 1.0) * 100.0
+                label = 'Blur' if raw < 100.0 else 'Sharp'
+
+            print(f'{fname}\traw={raw:.4f}\tnorm={norm:.2f}\tlabel={label}')
+        except Exception as exc:
+            print(f'{fname}\tERROR: {exc}')
+
+
 if __name__ == '__main__':
-    config = AppConfig()
-    app = PhotoSelectorApp(config)
-    app.mainloop()
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description='picsel – photo selector / blur detector',
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument(
+        '--input-dir',
+        metavar='DIR',
+        help='Directory of images to process in CLI batch mode. '
+             'When omitted the GUI is launched instead.',
+    )
+    parser.add_argument(
+        '--blur-method',
+        choices=['laplacian', 'fft'],
+        default='laplacian',
+        help='Blur-detection algorithm used in CLI batch mode.',
+    )
+    args = parser.parse_args()
+
+    if args.input_dir:
+        _run_cli(args.input_dir, args.blur_method)
+    else:
+        config = AppConfig()
+        app = PhotoSelectorApp(config)
+        app.mainloop()
