@@ -1,13 +1,21 @@
 import os
 import sys
-import tkinter as tk
-from tkinter import filedialog, messagebox
-from PIL import Image, ImageTk
-import numpy as np
-import cv2
-import pillow_heif
 import json
 import configparser
+import numpy as np
+import cv2
+
+sys.path.insert(0, os.path.dirname(__file__))
+from blur_laplacian import compute_blur_score_laplacian, blur_label_and_color, normalize_score
+
+try:
+    import tkinter as tk
+    from tkinter import filedialog, messagebox
+    from PIL import Image, ImageTk
+    import pillow_heif
+    _TK_AVAILABLE = True
+except ImportError:
+    _TK_AVAILABLE = False
 
 SETTINGS_PATH = os.path.join(os.path.dirname(sys.argv[0]), 'setting.ini')
 
@@ -43,8 +51,15 @@ class AppConfig:
         with open(self.path, 'w', encoding='utf-8') as f:
             self.config.write(f)
 
-class PhotoSelectorApp(tk.Tk):
+_TkBase = tk.Tk if _TK_AVAILABLE else object
+
+class PhotoSelectorApp(_TkBase):
     def __init__(self, config: AppConfig):
+        if not _TK_AVAILABLE:
+            raise RuntimeError(
+                'tkinter is not available. '
+                'Use --input-dir with main.py for CLI batch mode.'
+            )
         super().__init__()
         self.config = config
         self.title('写真選定アプリ picsel')
@@ -196,10 +211,9 @@ class PhotoSelectorApp(tk.Tk):
         return img
 
     def is_blur(self, img):
-        arr = np.array(img.convert('L'))
-        lap = cv2.Laplacian(arr, cv2.CV_64F)
-        var = lap.var()
-        return var < self.config.blur_threshold
+        arr = cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR)
+        score = compute_blur_score_laplacian(arr)
+        return score < self.config.blur_threshold
 
     def prefetch_next(self):
         # プリフェッチ（次画像を事前読み込み）
@@ -264,6 +278,52 @@ class PhotoSelectorApp(tk.Tk):
         self.exit_without_delete()
 
 if __name__ == '__main__':
-    config = AppConfig()
-    app = PhotoSelectorApp(config)
-    app.mainloop()
+    import argparse
+
+    parser = argparse.ArgumentParser(description='写真選定アプリ picsel')
+    parser.add_argument(
+        '--blur-method',
+        choices=['laplacian', 'fft'],
+        default='laplacian',
+        help='Blur detection method (default: laplacian)',
+    )
+    parser.add_argument(
+        '--input-dir',
+        metavar='DIR',
+        default='',
+        help='Process all images in DIR and print blur scores, then exit',
+    )
+    args = parser.parse_args()
+
+    if args.input_dir:
+        # CLI batch mode: output blur scores for every image in the directory
+        exts = ('.jpg', '.jpeg', '.png', '.heic')
+        image_files = sorted(
+            f for f in os.listdir(args.input_dir) if f.lower().endswith(exts)
+        )
+        if not image_files:
+            print(f'No images found in {args.input_dir}')
+            sys.exit(0)
+
+        if args.blur_method == 'laplacian':
+            print(f'{"File":<40} {"Raw score":>10} {"Norm(0-100)":>12} {"Label":>6}')
+            print('-' * 72)
+            for fname in image_files:
+                path = os.path.join(args.input_dir, fname)
+                try:
+                    score = compute_blur_score_laplacian(path)
+                    norm = normalize_score(score)
+                    label, _ = blur_label_and_color(score)
+                    print(f'{fname:<40} {score:>10.2f} {norm:>12.2f} {label:>6}')
+                except Exception as e:
+                    print(f'{fname:<40} ERROR: {e}')
+        else:
+            print(f'Blur method "{args.blur_method}" is not yet implemented.')
+            sys.exit(1)
+    else:
+        if not _TK_AVAILABLE:
+            print('Error: tkinter is not available. Use --input-dir for CLI batch mode.')
+            sys.exit(1)
+        config = AppConfig()
+        app = PhotoSelectorApp(config)
+        app.mainloop()
