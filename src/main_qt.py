@@ -3,10 +3,13 @@ import os
 import configparser
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QFileDialog, QLabel
+    QPushButton, QFileDialog, QLabel, QComboBox,
 )
-from PyQt5.QtCore import Qt
+from PyQt5.QtCore import Qt, QObject, QThread, pyqtSignal
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(__file__))
+from blur_laplacian import compute_blur_score_laplacian, blur_label_and_color, normalize_score
 
 
 SETTINGS_PATH = os.path.join(os.path.dirname(sys.argv[0]), 'setting.ini')
@@ -32,6 +35,26 @@ class AppConfig:
         with open(self.path, 'w', encoding='utf-8') as f:
             self.config.write(f)
 
+class _BlurWorker(QObject):
+    """Background worker that computes a Laplacian blur score for one image."""
+
+    result_ready = pyqtSignal(float, float, str, str)  # raw, norm, label, color
+
+    def __init__(self, path: str) -> None:
+        super().__init__()
+        self._path = path
+
+    def run(self) -> None:
+        try:
+            score = compute_blur_score_laplacian(self._path)
+            norm = normalize_score(score)
+            label, color = blur_label_and_color(score)
+        except Exception as exc:
+            print(f'Blur calculation failed for {self._path}: {exc}')
+            score, norm, label, color = 0.0, 0.0, "Error", "grey"
+        self.result_ready.emit(score, norm, label, color)
+
+
 class PhotoSelectorApp(QMainWindow):
     def __init__(self, config):
         super().__init__()
@@ -45,6 +68,8 @@ class PhotoSelectorApp(QMainWindow):
         self.prefetch_cache = {}
         self.delete_list = []
         self.json_delete_path = ''
+        self._blur_thread: QThread | None = None
+        self._blur_worker: _BlurWorker | None = None
         self.init_ui()
         self.bind_keys()
         self.load_images()
@@ -75,6 +100,12 @@ class PhotoSelectorApp(QMainWindow):
         self.btn_save = QPushButton('保存先選択')
         self.btn_save.clicked.connect(self.select_save_dir)
         hbox.addWidget(self.btn_save)
+        blur_label = QLabel('Blur method:')
+        hbox.addWidget(blur_label)
+        self.blur_method_combo = QComboBox()
+        self.blur_method_combo.addItems(['Laplacian', 'FFT'])
+        self.blur_method_combo.currentIndexChanged.connect(self._on_blur_method_changed)
+        hbox.addWidget(self.blur_method_combo)
         self.btn_exit = QPushButton('削除して終了')
         self.btn_exit.clicked.connect(self.exit_and_delete)
         hbox.addWidget(self.btn_exit)
@@ -140,14 +171,51 @@ class PhotoSelectorApp(QMainWindow):
         self.image_label.setPixmap(qt_img)
         self.image_label.setText('')
         self.prefetch_next()
+        # Asynchronously compute and display blur score badge
+        method = self.blur_method_combo.currentText()
+        if method == 'Laplacian':
+            self._start_blur_async(path)
+        else:
+            self.update_info_label()
+
+    def _start_blur_async(self, path: str) -> None:
+        """Start an async blur score calculation for *path*."""
+        # Stop any in-progress calculation
+        if self._blur_thread is not None and self._blur_thread.isRunning():
+            self._blur_thread.quit()
+            self._blur_thread.wait()
+
+        self._blur_worker = _BlurWorker(path)
+        self._blur_thread = QThread(self)
+        self._blur_worker.moveToThread(self._blur_thread)
+        self._blur_thread.started.connect(self._blur_worker.run)
+        self._blur_worker.result_ready.connect(self._on_blur_result)
+        self._blur_worker.result_ready.connect(self._blur_thread.quit)
+        self._blur_thread.start()
+
+    def _on_blur_result(self, score: float, norm: float, label: str, color: str) -> None:
+        """Called from the main thread when blur calculation is complete."""
+        self.info_label.setText(
+            f'参照先: {self.open_dir}\n保存先: {self.save_dir}\n'
+            f'Blur [{self.blur_method_combo.currentText()}]: {label}'
+            f'  score={score:.1f}  norm={norm:.1f}/100'
+        )
+
+    def _on_blur_method_changed(self) -> None:
+        """Re-evaluate blur for the current image when the method changes."""
+        self.show_image()
 
     def is_blur(self, img):
         import numpy as np
         import cv2
-        arr = np.array(img.convert('L'))
-        lap = cv2.Laplacian(arr, cv2.CV_64F)
-        var = lap.var()
-        return var < 100.0  # 閾値は仮値
+        arr = cv2.cvtColor(np.array(img.convert('RGB')), cv2.COLOR_RGB2BGR)
+        method = self.blur_method_combo.currentText()
+        if method == 'Laplacian':
+            score = compute_blur_score_laplacian(arr)
+        else:
+            # FFT method not yet implemented – fall back to Laplacian
+            score = compute_blur_score_laplacian(arr)
+        return score < 100.0  # 閾値は仮値
 
     def overlay_blur_label(self, img):
         from PIL import ImageDraw, ImageFont
