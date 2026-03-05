@@ -3,7 +3,7 @@ import os
 import configparser
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QPushButton, QFileDialog, QLabel
+    QPushButton, QFileDialog, QLabel, QComboBox
 )
 from PyQt5.QtCore import Qt
 from PIL import Image
@@ -45,6 +45,7 @@ class PhotoSelectorApp(QMainWindow):
         self.prefetch_cache = {}
         self.delete_list = []
         self.json_delete_path = ''
+        self.blur_method = 'laplacian'
         self.init_ui()
         self.bind_keys()
         self.load_images()
@@ -75,6 +76,12 @@ class PhotoSelectorApp(QMainWindow):
         self.btn_save = QPushButton('保存先選択')
         self.btn_save.clicked.connect(self.select_save_dir)
         hbox.addWidget(self.btn_save)
+        # Blur-method selector
+        self.blur_method_combo = QComboBox()
+        self.blur_method_combo.addItem('ぼかし判定: Laplacian', 'laplacian')
+        self.blur_method_combo.addItem('ぼかし判定: FFT', 'fft')
+        self.blur_method_combo.currentIndexChanged.connect(self._on_blur_method_changed)
+        hbox.addWidget(self.blur_method_combo)
         self.btn_exit = QPushButton('削除して終了')
         self.btn_exit.clicked.connect(self.exit_and_delete)
         hbox.addWidget(self.btn_exit)
@@ -83,6 +90,10 @@ class PhotoSelectorApp(QMainWindow):
         hbox.addWidget(self.btn_exit2)
         vbox.addLayout(hbox)
         self.update_info_label()
+
+    def _on_blur_method_changed(self, index: int) -> None:
+        self.blur_method = self.blur_method_combo.itemData(index)
+        self.show_image()
 
     def select_open_dir(self):
         d = QFileDialog.getExistingDirectory(self, '写真フォルダを選択', self.open_dir or os.getcwd())
@@ -126,10 +137,10 @@ class PhotoSelectorApp(QMainWindow):
             QMessageBox.critical(self, 'エラー', f'画像を開けません: {fname}')
             return
         img_disp = self.resize_image(img)
-        blur = self.is_blur(img)
+        blur, label, color = self.get_blur_info(img)
         img_disp = self.overlay_zoom(img_disp, img)
         if blur:
-            img_disp = self.overlay_blur_label(img_disp)
+            img_disp = self.overlay_blur_label(img_disp, label=label, color=color)
         # Pillow画像をQPixmapに変換
         import io
         buf = io.BytesIO()
@@ -141,15 +152,31 @@ class PhotoSelectorApp(QMainWindow):
         self.image_label.setText('')
         self.prefetch_next()
 
-    def is_blur(self, img):
+    def get_blur_info(self, img):
+        """Return (is_blur: bool, label: str, color: str) using the selected method."""
         import numpy as np
         import cv2
+        from blur_fft import blur_label_and_color, compute_blur_score_fft, normalize_score
         arr = np.array(img.convert('L'))
+        if self.blur_method == 'fft':
+            raw = compute_blur_score_fft(arr)
+            norm = normalize_score(raw)
+            label, color = blur_label_and_color(norm)
+            return norm < 30.0, label, color
+        # Laplacian (default)
         lap = cv2.Laplacian(arr, cv2.CV_64F)
         var = lap.var()
-        return var < 100.0  # 閾値は仮値
+        is_blur = var < 100.0
+        label = 'Blur' if is_blur else 'Sharp'
+        color = 'red' if is_blur else 'green'
+        return is_blur, label, color
 
-    def overlay_blur_label(self, img):
+    def is_blur(self, img):
+        is_blur, _label, _color = self.get_blur_info(img)
+        return is_blur
+
+
+    def overlay_blur_label(self, img, label: str = 'Blur', color: str = 'red'):
         from PIL import ImageDraw, ImageFont
         import platform
         img = img.copy()
@@ -171,8 +198,8 @@ class PhotoSelectorApp(QMainWindow):
                 font = ImageFont.truetype("arial.ttf", 32)
         except:
             font = ImageFont.load_default()
-        draw.rectangle([0,0,100,40], fill=(255,255,255,128))
-        draw.text((5,5), 'Blur', fill='red', font=font)
+        draw.rectangle([0, 0, 120, 40], fill=(255, 255, 255, 128))
+        draw.text((5, 5), label, fill=color, font=font)
         return img
 
     def prefetch_next(self):

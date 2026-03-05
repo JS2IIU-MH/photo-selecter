@@ -1,3 +1,4 @@
+import argparse
 import os
 import sys
 import tkinter as tk
@@ -44,9 +45,10 @@ class AppConfig:
             self.config.write(f)
 
 class PhotoSelectorApp(tk.Tk):
-    def __init__(self, config: AppConfig):
+    def __init__(self, config: AppConfig, blur_method: str = 'laplacian'):
         super().__init__()
         self.config = config
+        self.blur_method = blur_method
         self.title('写真選定アプリ picsel')
         self.geometry(f'{self.config.width}x{self.config.height}')
         self.protocol('WM_DELETE_WINDOW', self.on_exit)
@@ -125,7 +127,7 @@ class PhotoSelectorApp(tk.Tk):
             self.image_panel.config(image='', text='画像を開けません')
             return
         img_disp = self.resize_image(img)
-        blur = self.is_blur(img)
+        blur = self.is_blur(img, self.blur_method)
         img_disp = self.overlay_zoom(img_disp, img)
         if blur:
             img_disp = self.overlay_blur_label(img_disp)
@@ -195,8 +197,13 @@ class PhotoSelectorApp(tk.Tk):
         draw.text((5,5), 'Blur', fill='red', font=font)
         return img
 
-    def is_blur(self, img):
+    def is_blur(self, img, method: str = 'laplacian') -> bool:
         arr = np.array(img.convert('L'))
+        if method == 'fft':
+            from blur_fft import compute_blur_score_fft, normalize_score
+            raw = compute_blur_score_fft(arr)
+            score = normalize_score(raw)
+            return score < self.config.blur_threshold
         lap = cv2.Laplacian(arr, cv2.CV_64F)
         var = lap.var()
         return var < self.config.blur_threshold
@@ -264,6 +271,71 @@ class PhotoSelectorApp(tk.Tk):
         self.exit_without_delete()
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='picsel – 写真選定アプリ')
+    parser.add_argument(
+        '--blur-method',
+        choices=['laplacian', 'fft'],
+        default=None,
+        help=(
+            'Blur-detection method to use. '
+            '"laplacian" uses the Laplacian variance method; '
+            '"fft" uses the FFT high-frequency energy ratio. '
+            'When specified together with --scan-dir the app runs in '
+            'non-interactive CLI mode and prints per-image scores.'
+        ),
+    )
+    parser.add_argument(
+        '--scan-dir',
+        default=None,
+        metavar='DIR',
+        help='Directory of images to scan in CLI mode (no GUI).',
+    )
+    parser.add_argument(
+        '--threshold',
+        type=float,
+        default=None,
+        help='Override the blur threshold from setting.ini.',
+    )
+    args = parser.parse_args()
+
     config = AppConfig()
-    app = PhotoSelectorApp(config)
-    app.mainloop()
+    if args.threshold is not None:
+        config.blur_threshold = args.threshold
+
+    if args.scan_dir is not None:
+        # ── CLI / non-interactive mode ────────────────────────────────────
+        from blur_fft import compute_blur_score_fft, normalize_score, blur_label_and_color
+        method = args.blur_method or 'laplacian'
+        exts = ('.jpg', '.jpeg', '.png', '.heic')
+        image_files = sorted(
+            f for f in os.listdir(args.scan_dir) if f.lower().endswith(exts)
+        )
+        if not image_files:
+            print(f'No images found in {args.scan_dir}')
+            sys.exit(0)
+
+        print(f'{"File":<40} {"Raw Score":>12} {"Score (0-100)":>14} {"Label":<8}')
+        print('-' * 78)
+        for fname in image_files:
+            path = os.path.join(args.scan_dir, fname)
+            try:
+                img_bgr = cv2.imread(path)
+                if img_bgr is None:
+                    raise IOError('Cannot read image')
+                if method == 'fft':
+                    raw = compute_blur_score_fft(img_bgr)
+                    norm = normalize_score(raw)
+                else:
+                    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY).astype('float64')
+                    lap = cv2.Laplacian(gray, cv2.CV_64F)
+                    raw = float(lap.var())
+                    norm = min(raw, 1000.0) / 1000.0 * 100.0
+                label, _ = blur_label_and_color(norm)
+                print(f'{fname:<40} {raw:>12.4f} {norm:>14.2f} {label:<8}')
+            except Exception as exc:
+                print(f'{fname:<40} ERROR: {exc}')
+    else:
+        # ── GUI mode ─────────────────────────────────────────────────────
+        blur_method = args.blur_method or 'laplacian'
+        app = PhotoSelectorApp(config, blur_method=blur_method)
+        app.mainloop()
